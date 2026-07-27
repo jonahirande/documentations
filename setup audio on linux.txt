@@ -1,0 +1,114 @@
+===============================================================================
+RHEL 9 XRDP & PIPEWIRE AUDIO REDIRECTION SETUP GUIDE
+===============================================================================
+Target OS: Red Hat Enterprise Linux 9 (RHEL 9)
+Client OS: Windows 10/11 (Remote Desktop Connection / mstsc.exe)
+Purpose: Configure graphical Remote Desktop (XRDP) with full PipeWire audio 
+         redirection for applications (YouTube, Teams, Media Players).
+===============================================================================
+
+1. PREREQUISITES & EPEL REPOSITORY SETUP
+-------------------------------------------------------------------------------
+Run as root or with sudo privileges:
+
+# Enable CodeReady Linux Builder (CRB) repository
+subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms
+
+# Install EPEL 9 Release Package
+dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+
+# Install Build Tools, PipeWire Development Headers, and XRDP Packages
+dnf install -y git gcc make autoconf automake libtool pkgconfig                pipewire-devel xrdp xorgxrdp
+
+
+2. CONFIGURE XRDP SERVICE & FIREWALL
+-------------------------------------------------------------------------------
+# Enable and start the XRDP service
+systemctl enable --now xrdp
+
+# Allow RDP port (3389/tcp) through firewalld
+firewall-cmd --permanent --add-port=3389/tcp
+firewall-cmd --reload
+
+# (Optional) If SELinux is ENFORCING, allow network connections:
+# setsebool -P xrdp_can_connect_network 1
+
+
+3. RESOLVE GNOME / XRDP SESSION LOGIN LOOP
+-------------------------------------------------------------------------------
+GNOME on RHEL 9 requires an explicit session launch configuration for XRDP.
+Create an .Xclients file for the non-root desktop user (e.g., ocp-admin):
+
+cat << 'EOF' > /home/ocp-admin/.Xclients
+#!/bin/sh
+export XDG_SESSION_TYPE=x11
+export GDK_BACKEND=x11
+exec gnome-session
+EOF
+
+chmod +x /home/ocp-admin/.Xclients
+chown ocp-admin:ocp-admin /home/ocp-admin/.Xclients
+
+* CRITICAL NOTE: Log out of the local console session (e.g., VMware Workstation) 
+  before connecting via RDP. GNOME 40+ only allows ONE active session per user.
+
+
+4. COMPILE & INSTALL PIPEWIRE XRDP AUDIO MODULE
+-------------------------------------------------------------------------------
+Compile neutrinolabs/pipewire-module-xrdp to enable native audio streaming:
+
+cd ~
+git clone https://github.com/neutrinolabs/pipewire-module-xrdp.git
+cd pipewire-module-xrdp
+
+./bootstrap
+./configure
+make
+sudo make install
+
+This installs 'libpipewire-module-xrdp.so' into /usr/lib64/pipewire-0.3 and 
+places the autostart trigger in /etc/xdg/autostart/pipewire-xrdp.desktop.
+
+
+5. ENABLE USER-LEVEL SOUND SERVICES
+-------------------------------------------------------------------------------
+Log in or switch to the desktop user (ocp-admin) to enable audio daemons:
+
+su - ocp-admin
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+# Enable and start user PipeWire and WirePlumber services
+systemctl --user enable --now pipewire pipewire-pulse wireplumber
+
+
+6. RESTART XRDP SERVICE
+-------------------------------------------------------------------------------
+Run as root or with sudo:
+
+sudo systemctl restart xrdp
+
+
+7. CONNECT FROM WINDOWS RDP CLIENT (mstsc.exe)
+-------------------------------------------------------------------------------
+1. Open Windows Remote Desktop Connection (mstsc.exe).
+2. Click "Show Options" -> "Local Resources" tab.
+3. Under "Remote audio", click "Settings...".
+4. Ensure "Play on this computer" is selected.
+5. Enter the RHEL 9 IP address (e.g., 192.168.22.206) and click "Connect".
+6. Select session "Xorg", enter username (ocp-admin) and password.
+
+
+8. VERIFICATION
+-------------------------------------------------------------------------------
+Inside the RDP desktop session, open a terminal and run:
+
+# Verify active audio sink
+pactl info
+(Default Sink should show: xrdp-sink)
+
+# Test audio output
+paplay /usr/share/sounds/freedesktop/stereo/bell.oga
+
+Play YouTube videos or launch Microsoft Teams; audio will stream smoothly to 
+your local Windows machine speakers.
+===============================================================================
